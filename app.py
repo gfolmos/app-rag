@@ -1,18 +1,12 @@
-# App que utiliza LangChain para hacer preguntas sobre los datos de un archivo pdf
-# RAG (Retrieval-Augmented Generation)
+# App que utiliza LangChain para hacer preguntas sobre los datos de un archivo
+# automatic analyzer
 # Autor: Gerardo Figueroa
-# Fecha: 10/06/26
+# Fecha: 08/06/26
 import streamlit as st
-from streamlit_pdf_viewer import pdf_viewer
+import pandas as pd
 import os
 from langchain_groq import ChatGroq
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma
-from langchain_classic.chains import create_retrieval_chain
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_experimental.agents import create_pandas_dataframe_agent
 
 # 1. Configuración de la página (ÚNICA Y AL INICIO)
 st.set_page_config(layout="wide")
@@ -20,106 +14,84 @@ st.set_page_config(layout="wide")
 API_KEY = st.secrets["GROQ_API_KEY"]
 os.environ["GROQ_API_KEY"] = API_KEY
 
-# Agente LLM
-llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    temperature=0,
-    groq_api_key=API_KEY
-)
+# Inicializar el modelo de Groq de forma global
+llm = ChatGroq(model_name="llama-3.3-70b-versatile", temperature=0)
 
-# Definición de la interfaz principal
+# --- Interfaz principal ---
 col1, col2 = st.columns([1, 2])
 with col1:
-    # Asegúrate de que esta ruta sea correcta en tu repositorio de GitHub
     if os.path.exists("images/img_ia.png"):
         st.image("images/img_ia.png", width=150)
 with col2:
-    st.header("Analizador de Documentos RAG (Retrieval-Augmented Generation)")
+    st.header("Analizador Automático (Automatic Analyzer)")
     st.write("🚀 Utiliza un agente de IA que es realmente sorprendente!")
 
-# Explicación del programa
+# Explicacion del programa
 with st.expander("Explicación del Programa"):
     st.write("""
-        En las empresas se tienen cantidad de documentos, fichas de calidad, procedimientos, manuales, etc. utilizando la IA se ahorra mucho tiempo con esta herramienta. \n
-        Como realizar la pregunta simple (ejemplos): \n
-        'Muestra como limpiar el refrigerador', 'Muestra la función power cool', 'Muestra número de página de este contenido:...'. \n
-        Nota Final: \n
-        Al utilizar la IA por seguridad no se recomendaría analizar los documentos confidenciales.
-        Para poder utilizar una herramienta IA como esta corriendo por internet, se puede correr localmente (on-premise)
-        en una computadora moderna para que la información no salga por internet y esté segura la información. \n
-        *La herramienta es experimental, tarda un poco en procesar*
-        """)
+            Prácticamente esta herramienta es un analista eficaz, solo realiza la pregunta como si la realizaras al analista y ya no tendrás que esperar días para recibir los informes. \n
+            Cómo realizar la pregunta simple (ejemplos): \n
+            'Muestra la suma de ventas', 'Muestra las ventas por región', 'Muestra número de Total_Transacciones por género' (fijarse en el nombre de la columna). \n
+            Nota: Si manda un error o no reconoce alguna palabra, reconstruye la pregunta. \n
+            Nota Final: \n
+            Al utilizar la IA no se recomendaría analizar los documentos de la empresa por propia política de la empresa o por seguridad.
+            Para poder utilizar una herramienta como esta corriendo con un agente de IA por internet, se puede utilizar localmente (on-premise)
+            en una computadora moderna para que la información no salga por internet y esté segura la información. \n
+            """)
 
-# Selección de archivos PDF disponibles en la raíz
-archivos_pdf = [f for f in os.listdir('.') if f.endswith('.pdf')]
+# 1ra: Seleccion archivos CSV
+archivos_csv = [f for f in os.listdir('.') if f.endswith('.csv')]
 
-if not archivos_pdf:
-    st.error("No se encontraron archivos pdf en la carpeta actual.")
+if not archivos_csv:
+    st.error("No se encontraron archivos CSV en la carpeta actual.")
 else:
-    archivo_seleccionado = st.selectbox("Selecciona el archivo que deseas analizar:", archivos_pdf)
-    
-    # --- PROCESAMIENTO DEL PDF (Se ejecuta una sola vez al cargar o cambiar el archivo) ---
-    with st.spinner("Procesando y preparando el documento..."):
-        loader = PyPDFLoader(archivo_seleccionado)
-        docs = loader.load()
+    archivo_seleccionado = st.selectbox("Selecciona el archivo que deseas analizar:", archivos_csv)
+    df = pd.read_csv(archivo_seleccionado, encoding="utf-8-sig")
 
-        if not docs:
-            st.error("El PDF está vacío o no se pudo leer.")
-            st.stop() # Detiene la ejecución si el PDF falla
-            
-        # Fragmentar texto
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        splits = text_splitter.split_documents(docs)
-
-        if not splits:
-            st.error("No se generaron fragmentos del documento. Revisa el PDF.")
-            st.stop()
-
-        try:
-            # Inicializar embeddings y Base de datos de manera global para el archivo seleccionado
-            embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-            vectorstore = Chroma.from_documents(documents=splits, embedding=embeddings)
-            retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-        except Exception as e:
-            st.error(f"Hubo un error al inicializar el procesador de embeddings: {e}")
-            st.stop()
-
-    # --- INTERFAZ DE USUARIO (Vista previa y Chat) ---
+    # 2da PARTE: MOSTRAR CONTENIDO (Desplegable)
     with st.expander(f"Ver vista previa de {archivo_seleccionado}"):
-        pdf_viewer(archivo_seleccionado)
+        st.dataframe(df)
 
+    # 3ra PARTE: INPUT DE PREGUNTA
     pregunta = st.chat_input("Haz una pregunta sobre los datos...")
-    
+
     if pregunta:
         with st.spinner("El agente está pensando y analizando los datos..."):
             try:
-                # Prompt del sistema
-                system_prompt = (
-                    "Eres un asistente experto en análisis de documentos.\n"
-                    "Responde la pregunta del usuario utilizando únicamente el siguiente contexto proporcionado. "
-                    "Si no sabes la respuesta, di que no la sabes.\n\n"
-                    "Contexto:\n{context}"
+                # PROMPT CRÍTICO: Obliga a Llama a no salirse del formato rígido de LangChain
+                prefix_prompt = (
+                    "You are working with a pandas dataframe in Python. The name of the dataframe is `df`.\n"
+                    "Strictly follow the format: Thought -> Action -> Observation -> Final Answer.\n"
+                    "Do not chat. Do not explain your actions. If you have the answer, output 'Final Answer:' followed immediately by your response.\n"
+                    "Always respond in Spanish."
                 )
-                prompt = ChatPromptTemplate.from_messages([
-                    ("system", system_prompt),
-                    ("human", "{input}"),
-                ])
 
-                # Creación de cadenas de ejecución (Chains)
-                question_answer_chain = create_stuff_documents_chain(llm, prompt)
-                rag_chain = create_retrieval_chain(retriever, question_answer_chain)
+                # Creamos el agente pasando el prompt personalizado en prefix
+                agente = create_pandas_dataframe_agent(
+                    llm, 
+                    df, 
+                    verbose=False, 
+                    allow_dangerous_code=True,
+                    handle_parsing_errors=True,
+                    prefix=prefix_prompt
+                )
 
-                # Invocación de la IA
-                resultado = rag_chain.invoke({"input": pregunta})
+                # Construimos la consulta forzando también formato limpio
+                consulta_final = pregunta + " Si la respuesta involucra múltiples filas o datos estructurados, devuélvela en una tabla Markdown clara."
                 
-                # Mostrar resultados
+                # Ejecutar la consulta
+                resultado = agente.invoke(consulta_final)
+
+                # Mostrar la respuesta
                 st.write(f"**Pregunta:** {pregunta}")
                 st.subheader("Respuesta del Asistente:")
-                st.success(resultado["answer"])
+                st.success(resultado["output"])
 
             except Exception as e:
                 st.error(f"Hubo un error al procesar la consulta: {e}")
+
 # Pie de página
+#st.sidebar.info("Esta app utiliza Groq Cloud para el procesamiento de lenguaje natural y Pandas para el análisis local.")
 #st.sidebar.info("Estado: Conectado a Groq | Memoria: Activa")
 #******************* fin programa ppal ***************************
 
