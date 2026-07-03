@@ -1,101 +1,134 @@
-# App que utiliza LangChain para hacer preguntas sobre los datos de un archivo
-# automatic analyzer
+# App que utiliza LangChain para hacer preguntas sobre los datos de un archivo pdf
+# RAG (Retrieval-Augmented Generation)
 # Autor: Gerardo Figueroa
-# Fecha: 08/06/26
+# Fecha: 10/06/26
+# rag optimizado
 import streamlit as st
-import pandas as pd
+from streamlit_pdf_viewer import pdf_viewer
 import os
+from pathlib import Path
 from langchain_groq import ChatGroq
-from langchain_experimental.agents import create_pandas_dataframe_agent
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
+from langchain_classic.chains import create_retrieval_chain
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_huggingface import HuggingFaceEmbeddings
 
-# 1. Configuración de la página (ÚNICA Y AL INICIO)
-st.set_page_config(layout="wide")
+# 1. CONFIGURACIÓN DE LA PÁGINA
+st.set_page_config(layout="wide", page_title="Analizador RAG", page_icon="🤖")
 
-API_KEY = st.secrets["GROQ_API_KEY"]
-os.environ["GROQ_API_KEY"] = API_KEY
+# 2. INICIALIZACIÓN DE ENTORNO Y LLM
+@st.cache_resource
+def inicializar_llm():
+    """Inicializa el modelo de lenguaje una sola vez."""
+    api_key = st.secrets["GROQ_API_KEY"]
+    os.environ["GROQ_API_KEY"] = api_key
+    return ChatGroq(
+        #model="llama-3.3-70b-versatile",
+        #model="gpt-oss-120b",  
+        #model="qwen/qwen3.6-27b",
+        model="openai/gpt-oss-120b",
+        temperature=0,
+        groq_api_key=api_key
+    )
 
-# Inicializar el modelo de Groq de forma global
-llm = ChatGroq(model_name="llama-3.3-70b-versatile", temperature=0)
+llm = inicializar_llm()
 
-# --- Interfaz principal ---
+# 3. FUNCIÓN CRÍTICA: PROCESAMIENTO CACHEADO DEL PDF
+@st.cache_resource
+def procesar_documento(ruta_pdf):
+    """Carga, fragmenta e indexa el PDF en un vector store persistido en caché."""
+    loader = PyPDFLoader(ruta_pdf)
+    docs = loader.load()
+    if not docs:
+        return None
+
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splits = text_splitter.split_documents(docs)
+    if not splits:
+        return None
+
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    vectorstore = Chroma.from_documents(documents=splits, embedding=embeddings)
+    return vectorstore.as_retriever(search_kwargs={"k": 3})
+
+# 4. INTERFAZ GRÁFICA (UI)
 col1, col2 = st.columns([1, 2])
 with col1:
-    if os.path.exists("images/img_ia.png"):
-        st.image("images/img_ia.png", width=150)
+    ruta_img = Path("images/img_ia.png")
+    if ruta_img.exists():
+        st.image(str(ruta_img), width=150)
 with col2:
-    st.header("Analizador Automático (Automatic Analyzer)")
+    st.header("Analizador de Documentos RAG (Retrieval-Augmented Generation)")
     st.write("🚀 Utiliza un agente de IA que es realmente sorprendente!")
 
-# Explicacion del programa
 with st.expander("Explicación del Programa"):
     st.write("""
-            Prácticamente esta herramienta es un analista eficaz, solo realiza la pregunta como si la realizaras al analista y ya no tendrás que esperar días para recibir los informes. \n
-            Cómo realizar la pregunta simple (ejemplos): \n
-            'Muestra la suma de ventas', 'Muestra las ventas por región', 'Muestra número de Total_Transacciones por género' (fijarse en el nombre de la columna). \n
-            Nota: Si manda un error o no reconoce alguna palabra, reconstruye la pregunta. \n
-            Nota Final: \n
-            Al utilizar la IA no se recomendaría analizar los documentos de la empresa por propia política de la empresa o por seguridad.
-            Para poder utilizar una herramienta como esta corriendo con un agente de IA por internet, se puede utilizar localmente (on-premise)
-            en una computadora moderna para que la información no salga por internet y esté segura la información. \n
-            """)
+        En las empresas se tienen cantidad de documentos, fichas de calidad, procedimientos, manuales, etc.
+        Utilizando la IA se ahorra mucho tiempo con esta herramienta.\n
+        **Ejemplos de preguntas simples:** \n
+        - 'Muestra como limpiar el refrigerador'
+        - 'Muestra la función power cool'
+        - 'Muestra número de página de este contenido:...' \n
+        *Nota de Seguridad:* Al utilizar la IA por seguridad no se recomendaría analizar documentos confidenciales en entornos nube. 
+        Para máxima seguridad, esta misma herramienta puede correr 100% local (On-Premise) en una computadora moderna.
+        """)
 
-# 1ra: Seleccion archivos CSV
-archivos_csv = [f for f in os.listdir('.') if f.endswith('.csv')]
+# 5. LÓGICA DE ARCHIVOS
+archivos_pdf = [f for f in os.listdir('.') if f.endswith('.pdf')]
 
-if not archivos_csv:
-    st.error("No se encontraron archivos CSV en la carpeta actual.")
+if not archivos_pdf:
+    st.error("No se encontraron archivos pdf en la carpeta actual.")
 else:
-    archivo_seleccionado = st.selectbox("Selecciona el archivo que deseas analizar:", archivos_csv)
-    df = pd.read_csv(archivo_seleccionado, encoding="utf-8-sig")
+    archivo_seleccionado = st.selectbox("Selecciona el archivo que deseas analizar:", archivos_pdf)
+    
+    # El spinner y procesamiento SOLO ocurren si el archivo cambia gracias a @st.cache_resource
+    with st.spinner("Procesando y preparando el documento dinámicamente..."):
+        retriever = procesar_documento(archivo_seleccionado)
+    
+    if retriever is None:
+        st.error("Error al procesar el documento. Asegúrate de que no esté vacío o dañado.")
+        st.stop()
 
-    # 2da PARTE: MOSTRAR CONTENIDO (Desplegable)
+    # --- INTERFAZ DE USUARIO (Vista previa y Chat) ---
     with st.expander(f"Ver vista previa de {archivo_seleccionado}"):
-        st.dataframe(df)
+        pdf_viewer(archivo_seleccionado)
 
-    # 3ra PARTE: INPUT DE PREGUNTA
     pregunta = st.chat_input("Haz una pregunta sobre los datos...")
-
+    
     if pregunta:
-        with st.spinner("El agente está pensando y analizando los datos..."):
-            try:
-                # PROMPT CRÍTICO: Obliga a Llama a no salirse del formato rígido de LangChain
-                prefix_prompt = (
-                    "You are working with a pandas dataframe in Python. The name of the dataframe is `df`.\n"
-                    "Strictly follow the format: Thought -> Action -> Observation -> Final Answer.\n"
-                    "Do not chat. Do not explain your actions. If you have the answer, output 'Final Answer:' followed immediately by your response.\n"
-                    "Always respond in Spanish."
-                )
+      # 🛑 FILTRO DE SEGURIDAD (Anti-Prompt Injection)
+        palabras_bloqueadas = ["environ", "secret", "os.", "sys.", "import", "open(", "write", "delete", "remove"]
+    
+        # Validar si la pregunta intenta acceder al sistema o variables
+        if any(token in pregunta.lower() for token in palabras_bloqueadas):
+            st.error("🛡️ Consulta bloqueada por políticas de seguridad del servidor. No se permiten comandos del sistema.")
+        else:   
+            st.info(f"🔍 **Consulta enviada:** {pregunta}")    
+            with st.spinner("El agente está pensando y analizando los datos..."):
+                try:
+                    system_prompt = (
+                        "Eres un asistente experto en análisis de documentos.\n"
+                        "Responde la pregunta del usuario utilizando únicamente el siguiente contexto proporcionado. "
+                        "Si no sabes la respuesta, di que no la sabes.\n\n"
+                        "Contexto:\n{context}"
+                    )
+                    prompt = ChatPromptTemplate.from_messages([
+                        ("system", system_prompt),
+                        ("human", "{input}"),
+                    ])
 
-                # Creamos el agente pasando el prompt personalizado en prefix
-                agente = create_pandas_dataframe_agent(
-                    llm, 
-                    df, 
-                    verbose=False, 
-                    allow_dangerous_code=True,
-                    handle_parsing_errors=True,
-                    prefix=prefix_prompt
-                )
+                    question_answer_chain = create_stuff_documents_chain(llm, prompt)
+                    rag_chain = create_retrieval_chain(retriever, question_answer_chain)
 
-                # Construimos la consulta forzando también formato limpio
-                consulta_final = pregunta + " Si la respuesta involucra múltiples filas o datos estructurados, devuélvela en una tabla Markdown clara."
-                
-                # Ejecutar la consulta
-                resultado = agente.invoke(consulta_final)
+                    resultado = rag_chain.invoke({"input": pregunta})
+                    
+                    # Renderizado de resultados limpio
+                    st.markdown(f"**Pregunta:** {pregunta}")
+                    st.subheader("Respuesta del Asistente:")
+                    st.success(resultado["answer"])
 
-                # Mostrar la respuesta
-                st.write(f"**Pregunta:** {pregunta}")
-                st.subheader("Respuesta del Asistente:")
-                st.success(resultado["output"])
-
-            except Exception as e:
-                st.error(f"Hubo un error al procesar la consulta: {e}")
-
-# Pie de página
-#st.sidebar.info("Esta app utiliza Groq Cloud para el procesamiento de lenguaje natural y Pandas para el análisis local.")
-#st.sidebar.info("Estado: Conectado a Groq | Memoria: Activa")
-#******************* fin programa ppal ***************************
-
-# ******************Definicion panel lateral*************
-   
-# *****************fin lateral ***********************
-
+                except Exception as e:
+                    st.error(f"Hubo un error al procesar la consulta: {e}")
